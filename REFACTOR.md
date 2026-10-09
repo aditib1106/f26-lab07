@@ -238,27 +238,126 @@ Read `notify/`. It works and the outbox tests pass.
 List every design pattern you can name in that package. For each one, the class
 or classes that carry it.
 
+1. **Strategy**: `NotificationStrategy` (interface), `EmailNotificationStrategy`
+   (the only implementation), held by `NotificationHub.strategy`.
+2. **Observer**: `NotificationHub` is the subject (`subscribe`, `publish` loops
+   over `subscribers`), `NotificationSubscriber` is the observer interface,
+   `OutboxSubscriber` the only concrete observer.
+3. **Factory** (a simple factory): `NotifierFactory.createStrategy()`, which
+   always returns `new EmailNotificationStrategy()`.
+4. **Singleton**: `NotifierFactory` (private constructor, lazy, `synchronized`
+   `getInstance()`).
+5. **Adapter**, loosely: `OutboxSubscriber` exists only to make `Outbox.append`
+   fit the `NotificationSubscriber.onNotification` signature.
+
 ### The problem each one solves
 
 For each pattern you listed, what would have to be true about the requirements
 for that pattern to be the right call? One sentence each, not in terms of
 "flexibility".
 
+1. **Strategy**: the same message has to be rendered in more than one format
+   (email, SMS, a facilities digest), and which one is chosen at runtime, per
+   hub or per recipient.
+2. **Observer**: more than one independent consumer has to receive every
+   message (say, the outbox *and* a mail sender *and* an audit log), and which
+   consumers exist is decided outside `NotificationHub`.
+3. **Factory**: choosing the renderer takes real logic or configuration (read
+   a setting, look up the member's preference) that callers shouldn't repeat.
+4. **Singleton**: there must be exactly one of something process-wide because
+   it owns shared state or a scarce resource (a connection pool, a config
+   cache), and handing it around would be worse than global access.
+5. **Adapter**: an existing class with a fixed interface (here `Outbox`) has
+   to plug into a different interface it can't be changed to implement.
+
 ### Which of those problems exist here
 
 For each pattern, does the problem it solves exist in this codebase? Point at
 the code that settles it.
+
+1. **Strategy: no.** `EmailNotificationStrategy` is the only implementation,
+   and `NotificationHub` never takes one in: its constructor hard-wires
+   `NotifierFactory.getInstance().createStrategy()`. Nothing can pass in a
+   different renderer, so there is nothing to vary.
+2. **Observer: no.** The only call to `subscribe` in `src/` is the hub's own
+   constructor, `subscribe(new OutboxSubscriber(outbox))`. `BookingWorkflow`
+   only calls `hub.publish`. There is exactly one consumer, and the hub picks it.
+   The shipped test `hubDeliversToItsOneSubscriber` asserts that count is 1.
+3. **Factory: no.** `createStrategy()` has no parameters and no branches; it is
+   `return new EmailNotificationStrategy();`. It is called from one place.
+4. **Singleton: no.** `NotifierFactory` has no fields at all, so there is no
+   shared state for "exactly one" to protect. Two instances would behave
+   identically. The only thing that depends on there being one is the test
+   `factoryHandsBackTheSameInstance`, which tests the pattern, not a behavior.
+5. **Adapter: no.** `Outbox` is our own class in the same package. If the hub
+   needs to append to it, it can call `outbox.append` directly.
 
 ### The simpler structure
 
 **Your proposal.** What replaces `notify/`. Sketch the classes and the one
 method that matters.
 
+Three types instead of seven: `NotificationMessage` (unchanged), `Outbox`
+(unchanged), and a concrete `NotificationHub` that renders and appends itself:
+
+```java
+public class NotificationHub {
+    private final Outbox outbox;
+
+    public NotificationHub() { this(new Outbox()); }
+    public NotificationHub(Outbox outbox) { /* same null check */ this.outbox = outbox; }
+
+    public void publish(NotificationMessage message) {
+        outbox.append("To: " + message.recipient()
+                + " | Subject: " + message.subject()
+                + " | " + message.body());
+    }
+
+    public Outbox getOutbox() { return outbox; }
+}
+```
+
+Deleted: `NotificationStrategy`, `EmailNotificationStrategy`,
+`NotifierFactory`, `NotificationSubscriber`, `OutboxSubscriber`. Nothing
+outside `notify/` changes: `BookingWorkflow` still calls `hub.publish(...)`,
+and every test still builds `new NotificationHub()` and reads `getOutbox()`.
+
 **What stays the same.** The tested behavior it must still produce, named
 precisely enough that a reader can check it against the shipped tests.
 
+- `NotificationHubTest.publishedMessageLandsInTheOutboxFullyRendered`: one
+  `publish` adds exactly one entry, and `getOutbox().last()` is
+  `"To: <recipient> | Subject: <subject> | <body>"`, separators exactly
+  `" | "`.
+- `NotificationHubTest.aConfirmationFromTheWorkflowReachesTheOutbox`: a
+  REGULAR `submit` produces that exact string for the confirmation.
+- The `hub.getOutbox().size()` counts in `BookingWorkflowTest`: one entry per
+  `publish`, in order, and none for a rejection (e.g. 1 after
+  `regularSubmitStoresAndNotifies`, 4 after
+  `recurringSubmitBooksEveryWeekOfAnOpenSeries`, 2 after
+  `regularCancelReleasesTheSlotAndNotifies`, 0 after
+  `submitRejectsAnUnknownRoom`).
+- `NotificationMessage`'s constructor still rejects a blank recipient and a
+  null subject, and `NotificationHub(Outbox)` still rejects null.
+
+Two shipped tests don't survive this, and that is the point of the critique:
+`hubDeliversToItsOneSubscriber` (asserts `subscriberCount() == 1`) and
+`factoryHandsBackTheSameInstance` (asserts `getInstance()` returns the same
+object). They pin the structure, not anything a user of the hub can observe,
+so the proposal deletes them along with the classes they test. Since milestone
+2 is a written critique, nothing is coded and the shipped 35 stay green.
+
 **What you would keep, if anything.** If you would keep one interface, say
 which and why. "None of it" is a fine answer if you can defend it.
+
+None of the interfaces. Each has exactly one implementation, and no caller,
+test, or configuration ever picks a different one. If a second renderer or a
+second consumer shows up, extracting an interface from a concrete
+`NotificationHub` is a small, mechanical change at that point. It's the same
+change whether we do it now or later, and doing it later means we know what
+the second implementation actually needs. The two classes I keep,
+`NotificationMessage` and `Outbox`, aren't pattern layers: one is the data
+`BookingWorkflow` builds, the other is what every test reads.
 
 ### What would bring each layer back
 
@@ -266,7 +365,39 @@ For at least two of the layers you would remove, what requirement, if it
 arrived next sprint, would make that layer the right structure? Be specific
 about the requirement, not about the pattern.
 
+- **Observer (`NotificationSubscriber`, `subscribe`).** "Every confirmation
+  and cancellation must also be written to an append-only audit log for the
+  facilities office, and the outbox stays as it is." Now two independent
+  consumers need every message, and which ones are wired up depends on
+  deployment (tests want only the outbox). A subscriber list on the hub is the
+  right structure.
+- **Strategy (`NotificationStrategy`).** "Members can choose SMS instead of
+  email; SMS must fit in 160 characters with no `To:`/`Subject:` header." Now
+  the same `NotificationMessage` renders two ways, chosen by the recipient's
+  preference, and a renderer interface with `EmailRenderer` and `SmsRenderer`
+  earns its place.
+- **Factory (`NotifierFactory`).** That same SMS requirement, plus "the
+  default format is set per deployment in a config file." Choosing the
+  renderer now takes real logic (read config, check member preference), and
+  putting it in one place stops `BookingWorkflow` and the hub from each
+  repeating it.
+
+The Singleton wouldn't come back for any of these: even a configured factory
+can be built once at startup and passed to the hub.
+
 **Misuse or anti-pattern?** Say which this is and why the distinction matters.
+
+Misuse. Strategy, Observer, and Factory are each implemented correctly; they
+are just applied to problems this codebase doesn't have (speculative
+generality). An anti-pattern is a structure that causes harm even when the
+problem is real. The Singleton is closest to that line, because it's global
+state, but here it's harmless because `NotifierFactory` has no fields.
+The distinction matters for what to do about it. A misused pattern should be
+removed now and brought back, unchanged, when the requirement shows up, as in
+the list above. An anti-pattern should be replaced by a different design even
+when the requirement is real. Calling this an anti-pattern would wrongly
+suggest that Observer or Strategy are bad, when the next sprint might need
+exactly them.
 
 ---
 
