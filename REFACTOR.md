@@ -175,6 +175,72 @@ with no null check of its own. That is safe only because
 `rejectMemberOrCapacity` returns a rejection for a null member, and
 `submitRegular` returns that rejection before reaching the loop.
 
+### Second refactor: replace conditional with polymorphism
+
+**Why there is a second refactor.** Extract Method came first (`e767d85`,
+above). It split each case into its own method, but `submit`, `cancel`,
+`priceOf`, and `describe` still each switched on `BookingType`, so it did not
+meet the handout's bar. I directed Replace Conditional with Polymorphism
+second, on top of the Extract Method commit, to remove the type switches.
+The pin (`16f12fd`) still predates both refactors.
+
+**The exact directive.**
+
+```
+Second refactor on BookingWorkflow: replace the conditional with polymorphism. Create a package-private interface BookingTypeHandler with submit(BookingRequest, Room), cancel(Booking, String roomName, boolean adminOverride), priceOf(Booking) and describe(Booking, String roomName). Add RegularHandler, RecurringHandler and BlockedHandler in the same package. Move the bodies of the existing submitX, cancelX, priceOfX and describe cases into them. BookingWorkflow looks up the handler from a Map<BookingType, BookingTypeHandler>, and no method switches on type anymore. Keep the “unsupported booking type” and default fallbacks behaving identically.
+
+Scope: only src/main/java/edu/cmu/cs214/scheduling/workflow/. New classes go there. Don’t touch src/test/, domain/, notify/, pricing/, reporting/, pom.xml, README.md or REFACTOR.md. Keep the strict < overlap in overlaps and the closed <= overlap in isTakenForSeries exactly as they are. Preserve the order of nextBookingId, nextSeriesId, save and publish, every message string, and every notification recipient. Run mvn -B test and show me the totals line. Don’t commit.
+```
+
+The directive said not to touch `REFACTOR.md`. This entry was added afterwards,
+in a separate commit.
+
+**The diff and the suite.** Commit `ccc6867` ("Replace conditional with
+polymorphism in BookingWorkflow"), directly after `06c477b`. Show it with
+`git show ccc6867`. It adds `BookingTypeHandler.java`, `RegularHandler.java`,
+`RecurringHandler.java`, and `BlockedHandler.java`, and rewrites
+`BookingWorkflow.java` to look handlers up in an `EnumMap<BookingType,
+BookingTypeHandler>`. `mvn -B test`:
+`Tests run: 36, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+`grep -n switch src/main/java/edu/cmu/cs214/scheduling/workflow/*.java`
+returns nothing.
+
+**What did NOT change.**
+
+- *Files.* `git show --stat ccc6867` lists only the five files under
+  `workflow/`. `git status` before the commit showed nothing changed in
+  `src/test/`, `domain/`, `notify/`, `pricing/`, `reporting/`, `pom.xml`,
+  `README.md`, or `REFACTOR.md`.
+- *Strings.* The set of distinct string literals across all of `workflow/` is
+  identical to `BookingWorkflow.java` at `06c477b`
+  (`grep -o '"[^"]*"' | sort -u`, then `diff`).
+- *Operators.* Still exactly two `<= 0` and three `< 0` across the package.
+  The strict `overlaps` stays in `BookingWorkflow.java`, used by
+  `RegularHandler` (room check and member check) and `BlockedHandler`. The
+  closed check `isTakenForSeries` moved to `RecurringHandler.java`, its only
+  caller, unchanged.
+- *Call order and fallbacks.* `nextBookingId`, `nextSeriesId`, `save`, and
+  `publish` happen in the same order inside each handler, and `cancel` still
+  looks up the room name before choosing a handler. A missing handler returns
+  the old `default` values ("unsupported booking type ...", `false`, `0.0`,
+  `"Booking #<id> in <room>"`). This can't happen today, since all three types
+  are registered and `BookingRequest` and `Booking` both reject a null type.
+- *Structure that did change.* `overlaps`, `rejectMemberOrCapacity`,
+  `recipientFor`, and `FACILITIES_CONTACT` went from `private` to
+  package-private `static` on `BookingWorkflow` so the handlers can share them.
+  `MAX_SERIES_WEEKS` moved to `RecurringHandler`. The Extract Method notes
+  above describe where things lived at `e767d85`.
+
+**One thing I looked at twice.** The recurring `<=`. After the move, the
+closed-overlap check is at `RecurringHandler.java:115`, and lines 117–118 still
+read `existing.getStart().compareTo(slot.end()) <= 0 &&
+slot.start().compareTo(existing.getEnd()) <= 0`. It's called only from
+`RecurringHandler.submit` (line 54), and none of the three `overlaps` call
+sites ended up in the series path. The pin
+`recurringSubmitSkipsAWeekThatStartsWhenAnotherBookingEnds` still passes. I
+didn't re-run the `<=`-to-`<` mutation against `ccc6867`; the mutation result
+above was measured on `e767d85`.
+
 ### The closing explanation
 
 **Refactor or regenerate?** Argue whether regenerating `BookingWorkflow` from scratch
@@ -214,9 +280,12 @@ Refactoring was the better call. Taking the four questions in turn:
   bodies are exact strings in the `Outbox`, and a regeneration could easily
   reword them. The tests only count messages, so that change wouldn't show either.
 
-Against that, the refactor's cost was small. One file, every string and
-operator preserved and checked, and the pin still guards the one place a
-merge would have been tempting (`isTakenForSeries`).
+Against that, the refactors' cost was small. Everything stayed inside
+`workflow/`: `BookingWorkflow.java` plus four new package-private types
+(`BookingTypeHandler`, `RegularHandler`, `RecurringHandler`, `BlockedHandler`).
+Every string and operator was preserved and checked, and the pin still passes
+on the one place a merge would have been tempting (`isTakenForSeries`, now in
+`RecurringHandler`).
 
 **What would flip your answer.** A condition about the artifact, not a feeling.
 
