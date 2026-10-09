@@ -18,15 +18,46 @@ observable result it pins. Not "recurring bookings work". Green against the
 shipped code, and you did not edit or delete an existing test method to get
 there.
 
+`src/test/java/edu/cmu/cs214/scheduling/workflow/RecurringBoundaryPinTest.java`,
+`recurringSubmitSkipsAWeekThatStartsWhenAnotherBookingEnds`: when
+`BookingWorkflow.submit` books a RECURRING series (Mon 10:00–11:00 from Oct 5,
+two weeks) into a room with a REGULAR booking from 9:00 to 10:00 on Oct 12,
+week 1 is booked, the Oct 12 10:00 week lands in `getSkipped()`, and the
+outcome is still accepted ("1 booked, 1 skipped"). Added as a new class in
+commit `16f12fd`, on top of the initial commit. No existing test was touched;
+36/36 green.
+
 **Why that one, and does a shipped test already cover it?** Of everything
 `BookingWorkflow` does, why is this the behavior worth a test? If something
 shipped comes close, say what your pin adds. If nothing does, say how you
 checked.
 
+`submit` repeats one interval-overlap check three times, but not
+consistently. REGULAR and BLOCKED use strict `<`, so touching slots are free,
+while RECURRING uses `<=`, so touching slots count as a conflict. The obvious
+refactor of that `switch` (extract an `overlaps()` helper, or one handler per
+type) would merge those three copies, and the RECURRING boundary would quietly
+become `<`. The closest shipped test is
+`BookingWorkflowTest.regularSubmitAcceptsASlotThatStartsWhenAnotherEnds`, but
+it only exercises REGULAR. The only series test,
+`recurringSubmitBooksEveryWeekOfAnOpenSeries`, runs against an empty room. I
+read every method in `BookingWorkflowTest`, and none puts a series next to an
+existing booking. I also checked by mutation: changing the two RECURRING
+`<= 0` comparisons in `submit` to `< 0` leaves all 35 shipped tests green and
+fails only the pin (`expected: <1> but was: <2>`).
+
 **What a regeneration would do differently here.** Suppose someone
 threw this class away and regenerated it from a one-line description of what a
 booking workflow does. Name the decision that would be made a second time, and
 say which way it would probably go.
+
+Whether two slots that only touch (one ends at 10:00, the next starts at
+10:00) conflict. A regeneration would pick that rule again, once, for every
+booking type, and it would almost certainly pick half-open intervals (`<`),
+so back-to-back is allowed everywhere. That matches the REGULAR test, so the
+shipped suite would pass, but series would start booking weeks the current
+code skips. Whether `<=` is a deliberate buffer between series meetings or a
+bug, the pin makes changing it a decision someone has to make on purpose.
 
 ### The directive
 
