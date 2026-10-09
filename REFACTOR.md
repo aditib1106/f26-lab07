@@ -119,15 +119,61 @@ has no reason to touch any other file.
 `git diff`, a branch), and the totals line (the shipped count plus your pin,
 all green).
 
+The refactor is its own commit, `e767d85` ("Extract Method refactor of
+BookingWorkflow"), directly after the directive commit `8f9ba20`. To show it:
+`git show e767d85`, or `git diff 8f9ba20 e767d85`. Totals, locally and in
+GitHub CI run 37956969682: `Tests run: 36, Failures: 0, Errors: 0, Skipped: 0`,
+`BUILD SUCCESS` (the shipped 35 plus `RecurringBoundaryPinTest`).
+
 **What did NOT change: behavior and files.** The observable behavior you
 checked is still the same, including anything that surprised you while reading.
 Which files outside the scope are untouched, and how you verified that rather
 than assumed it. If the agent reached outside the directive, say where and what
 you did about it.
 
+- *Behavior.* All 36 tests pass, including the pin, so the RECURRING `<=`
+  boundary still holds. The pin still guards the refactored code: changing the
+  two `<= 0` in the new `isTakenForSeries` to `< 0` fails only
+  `recurringSubmitSkipsAWeekThatStartsWhenAnotherBookingEnds`
+  (`expected: <1> but was: <2>`). I reverted that change.
+- *Strings.* The set of distinct string literals in `BookingWorkflow.java` is
+  identical before and after (`grep -o '"[^"]*"' | sort -u`, then `diff`). The
+  only literals that disappeared were the second copies of the "unknown member"
+  and capacity messages, now built once in `rejectMemberOrCapacity`.
+- *Operators.* Before: two `<= 0` and seven `< 0`. After: two `<= 0` (both in
+  `isTakenForSeries`) and three `< 0` (two in `overlaps`, one in
+  `cancelRecurring`'s "skip earlier occurrences" check). The three strict
+  overlap checks in REGULAR (room, then the member's other bookings) and
+  BLOCKED all used the same pair of strict comparisons, so collapsing them into
+  `overlaps` changes nothing.
+- *Call order.* `nextBookingId`, `nextSeriesId`, `save`, and `publish` happen
+  in the same order and behind the same rejections. `nextSeriesId` is still
+  only called after every series check passes.
+- *Surprises kept as they were.* These all came up while reading and are
+  preserved: a series never checks whether the member is booked elsewhere
+  (REGULAR does); cancelling one occurrence also cancels every *later* one,
+  but no earlier ones; and a series where every week is skipped still comes
+  back `isAccepted()`.
+- *Files.* `git diff --stat 8f9ba20 e767d85` lists only `BookingWorkflow.java`.
+  `git diff --stat 16f12fd e767d85`, excluding `REFACTOR.md` and
+  `BookingWorkflow.java`, prints nothing, so no test, `domain/`, `notify/`,
+  `pricing/`, `reporting/`, or `pom.xml` file changed. The agent did not reach
+  outside the directive.
+
 **One thing the agent changed that you had to look at twice.** Something you
 checked line by line before accepting. If there was nothing, say how carefully
 you read the diff.
+
+The member check in `submitRegular`. The original compared against `held`
+(every non-cancelled booking the member holds, across all rooms), not
+`existing` (active bookings in this room). After the refactor it calls
+`overlaps(held, slot)`, the same helper the room check uses. I checked that
+the original operators in that loop were both strict `<`, not `<=`, so sharing
+the helper is safe, and that the `isCancelled()` / member-id `continue` stayed
+in front of it. A related point: `submitRegular` now calls `member.getId()`
+with no null check of its own. That is safe only because
+`rejectMemberOrCapacity` returns a rejection for a null member, and
+`submitRegular` returns that rejection before reaching the loop.
 
 ### The closing explanation
 
