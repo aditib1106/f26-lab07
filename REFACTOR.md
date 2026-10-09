@@ -66,6 +66,53 @@ in the handout) and paste the directive you gave the agent, including the scope
 you set, meaning which files and packages were in bounds, which were not, and
 one line on why the boundary sits where it does.
 
+Refactor: **Extract Method**, confined to `BookingWorkflow`. Directive given to
+the agent, verbatim:
+
+```
+Refactor: Extract Method, in BookingWorkflow only.
+
+Scope
+- In bounds: src/main/java/edu/cmu/cs214/scheduling/workflow/BookingWorkflow.java.
+- Out of bounds: every other file. Do not edit domain/, notify/, pricing/,
+  reporting/, pom.xml, or anything under src/test/. Do not add new classes or files.
+- Why: every store write and notification already goes through BookingWorkflow,
+  so a behavior-preserving cleanup of it should never need another file. A change
+  anywhere else means the refactor has turned into a redesign.
+
+What to do
+- Extract each case of the switch in submit, cancel, and priceOf into its own
+  private method (e.g. submitRegular, submitRecurring, submitBlocked,
+  cancelRecurring), so each public method reads as a short dispatch.
+- Extract code that is duplicated word for word into private helpers. Examples
+  are the member-and-capacity validation shared by REGULAR and RECURRING, and
+  the roomName lookup in cancel and describe.
+- Keep the switch statements. Do not replace them with polymorphism, enums with
+  behavior, or strategy classes. That is a different refactor.
+
+What must not change
+- Public method signatures, constructor, and constants.
+- Every returned message, notification recipient, subject, and body string,
+  character for character.
+- The order of calls to store.nextBookingId(), store.nextSeriesId(),
+  store.save(), and hub.publish(), including which calls happen before a
+  rejection can return.
+- Every comparison operator, exactly as written. The overlap checks are NOT all
+  the same: RECURRING uses <= and REGULAR/BLOCKED use <. Do not merge code that
+  only looks duplicated. If two blocks differ in any operator or condition,
+  either keep them separate or pass the difference in explicitly.
+
+Done means
+- JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 mvn -B test shows
+  Tests run: 36, Failures: 0, Errors: 0, Skipped: 0.
+- git diff --stat lists BookingWorkflow.java and nothing else.
+- Do not commit. Stop and show me the diff.
+```
+
+Why the boundary sits there: `BookingWorkflow` is the single class every store
+write and notification goes through, so a behavior-preserving Extract Method
+has no reason to touch any other file.
+
 ### The result
 
 **The diff and the suite.** How you are showing the diff to the TA (a commit,
