@@ -181,7 +181,51 @@ with no null check of its own. That is safe only because
 would have been the better call, using the lecture's four questions (test
 coverage, code age, spec quality, and reach). Be concrete about this codebase.
 
+Refactoring was the better call. Taking the four questions in turn:
+
+- *Test coverage.* Thin exactly where `BookingWorkflow` is subtle. The 18
+  shipped tests in `BookingWorkflowTest` cover each booking type's happy path
+  and one rejection, but miss at least four decisions the code makes. These
+  are: the RECURRING `<=` boundary (my pin); a series never checking the
+  member's other bookings; `cancel` on one occurrence releasing that week and
+  every later one but no earlier ones (`recurringCancelReleasesTheOccurrence`
+  cancels the last week, so it can't tell); and an all-skipped series still
+  coming back `isAccepted()`. The mutation check showed what that means: a
+  regeneration could flip the boundary with all 35 shipped tests green.
+  Refactoring under one pin is safe. Regenerating under that coverage is not.
+- *Code age.* The repo has one commit, "Initial commit", so there is no history
+  of why the series check uses `<=` or why series skip the member check.
+  Whether these are deliberate rules (a buffer between weekly meetings) or bugs
+  is unknown. Old, unexplained behavior is the kind a regeneration erases
+  without anyone noticing, and the kind a refactor keeps by default.
+- *Spec quality.* The only spec is the README's one paragraph ("members book
+  rooms one slot at a time or as a weekly series..."). It doesn't say whether
+  touching slots conflict, what a partial series means, or what cancelling one
+  occurrence does. A regeneration from that would have to invent those answers,
+  and would probably pick one half-open overlap rule for every type, a
+  member-conflict check for series too, and cancel-one-occurrence-only. Each of
+  those is a behavior change.
+- *Reach.* Nothing in `src/main` calls `BookingWorkflow` directly, but
+  everything it writes into `BookingStore` is read by `ReportService`.
+  `occupancyFor` counts and sums the minutes of `activeInRoom`, and
+  `totalRevenue` / `revenueForMember` price every live non-BLOCKED booking.
+  So each week a regenerated series books instead of skipping changes
+  occupancy, minutes, and revenue numbers. The notification subjects and
+  bodies are exact strings in the `Outbox`, and a regeneration could easily
+  reword them. The tests only count messages, so that change wouldn't show either.
+
+Against that, the refactor's cost was small. One file, every string and
+operator preserved and checked, and the pin still guards the one place a
+merge would have been tempting (`isTakenForSeries`).
+
 **What would flip your answer.** A condition about the artifact, not a feeling.
+
+If `BookingWorkflowTest` pinned every decision listed above: the overlap
+boundary for each booking type, member-conflict checking for series, which
+occurrences `cancel` releases, the acceptance of an all-skipped series, and
+the exact notification text. Then any difference in a regenerated class would
+show up as a red test, and regenerating would be a reasonable, checkable call.
+With today's suite, it isn't.
 
 ---
 
