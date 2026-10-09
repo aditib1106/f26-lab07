@@ -408,4 +408,14 @@ Read `pricing/`. Not coded, one sentence.
 **The pattern.** Which one fits `PriceCalculator`, and the problem that makes
 it fit. Name the problem.
 
+Decorator: `price()` is a base hourly rate wrapped in a fixed, ordered stack
+of adjustments (weekend surcharge, then long-booking discount, then tier
+discount), each applied to the running price from the previous one, so the
+problem is a growing ordered list of price adjustments hard-coded as
+successive `if` blocks in one method.
+
 **Would you apply it today?** Yes or no, one line, with the reason.
+
+No: there are four fixed rules in one 20-line method, each pinned by a test in
+`PriceCalculatorTest`, and no requirement asks to add, reorder, or switch rules
+per room or promotion.
